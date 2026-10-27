@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>테트리스 · 1차 실습</title>
+
+<!-- ===================== CSS 겹 (어떻게 보이나) ===================== -->
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #0f172a; color: #e2e8f0;
+    font-family: system-ui, -apple-system, "Malgun Gothic", sans-serif;
+  }
+  .wrap { display: flex; gap: 20px; align-items: flex-start; padding: 16px; }
+  canvas#board { background: #111827; border: 3px solid #334155; border-radius: 8px; }
+  .side { display: flex; flex-direction: column; gap: 14px; min-width: 150px; }
+  .panel { background: #1e293b; border-radius: 10px; padding: 12px 14px; }
+  .panel h2 { font-size: 13px; color: #94a3b8; margin-bottom: 6px; letter-spacing: .05em; }
+  .panel .value { font-size: 26px; font-weight: 700; }
+  canvas#next { display: block; margin: 0 auto; }
+  .keys { font-size: 13px; line-height: 1.8; color: #cbd5e1; }
+  button {
+    font: inherit; font-weight: 700; padding: 10px; border: 0; border-radius: 8px;
+    background: #f59e0b; color: #111; cursor: pointer;
+  }
+  .overlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column; gap: 14px;
+    align-items: center; justify-content: center; background: rgba(15, 23, 42, .8); text-align: center;
+  }
+  .overlay h1 { font-size: 34px; }
+  .hidden { display: none; }
+  @media (max-width: 560px) { .wrap { flex-direction: column; align-items: center; } .side { flex-direction: row; flex-wrap: wrap; justify-content: center; } }
+</style>
+</head>
+<body>
+
+<!-- ===================== HTML 겹 (무엇이 있나) ===================== -->
+<div class="wrap">
+  <canvas id="board" width="300" height="600"></canvas>
+  <div class="side">
+    <div class="panel"><h2>점수</h2><div class="value" id="score">0</div></div>
+    <div class="panel"><h2>줄</h2><div class="value" id="lines">0</div></div>
+    <div class="panel"><h2>레벨</h2><div class="value" id="level">1</div></div>
+    <div class="panel"><h2>다음 블록</h2><canvas id="next" width="100" height="100"></canvas></div>
+    <div class="panel keys">
+      ← → 이동<br>↑ 회전<br>↓ 천천히 내리기<br>스페이스 바로 떨어뜨리기<br>P 일시정지
+    </div>
+    <button id="startBtn">시작</button>
+  </div>
+</div>
+<div class="overlay hidden" id="overlay">
+  <h1 id="ovTitle">일시정지</h1>
+  <p id="ovText">P 키를 누르면 계속합니다</p>
+  <button id="ovBtn" class="hidden">다시하기</button>
+</div>
+
+<!-- ===================== JavaScript 겹 (누르면 뭐가 바뀌나) ===================== -->
+<script>
+const COLS = 10, ROWS = 20, SIZE = 30;
+const board = document.getElementById('board').getContext('2d');
+const next = document.getElementById('next').getContext('2d');
+const COLORS = { I: '#22d3ee', O: '#facc15', T: '#a855f7', S: '#22c55e', Z: '#ef4444', J: '#3b82f6', L: '#f97316' };
+const SHAPES = {
+  I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+  O: [[1,1],[1,1]],
+  T: [[0,1,0],[1,1,1],[0,0,0]],
+  S: [[0,1,1],[1,1,0],[0,0,0]],
+  Z: [[1,1,0],[0,1,1],[0,0,0]],
+  J: [[1,0,0],[1,1,1],[0,0,0]],
+  L: [[0,0,1],[1,1,1],[0,0,0]]
+};
+
+let grid, piece, nextType, score, lines, level, dropTimer, dropInterval, last, running = false, paused = false;
+
+const randType = () => 'IOTSZJL'[Math.floor(Math.random() * 7)];
+const newPiece = type => ({ type, m: SHAPES[type].map(r => r.slice()), x: Math.floor(COLS / 2) - Math.ceil(SHAPES[type][0].length / 2), y: 0 });
+
+function collide(m, x, y) {
+  return m.some((row, r) => row.some((v, c) => v && (x + c < 0 || x + c >= COLS || y + r >= ROWS || (y + r >= 0 && grid[y + r][x + c]))));
+}
+function rotate(m) { return m[0].map((_, c) => m.map(row => row[c]).reverse()); }
+
+function merge() {
+  piece.m.forEach((row, r) => row.forEach((v, c) => { if (v && piece.y + r >= 0) grid[piece.y + r][piece.x + c] = piece.type; }));
+}
+function clearLines() {
+  let cleared = 0;
+  for (let r = ROWS - 1; r >= 0; r--) {
+    if (grid[r].every(Boolean)) { grid.splice(r, 1); grid.unshift(Array(COLS).fill(null)); cleared++; r++; }
+  }
+  if (cleared) {
+    score += [0, 100, 300, 500, 800][cleared] * level;
+    lines += cleared;
+    level = 1 + Math.floor(lines / 10);              // 10줄마다 레벨 업
+    dropInterval = Math.max(100, 800 - (level - 1) * 70); // 레벨이 오르면 빨라짐
+    updateHud();
+  }
+}
+function spawn() {
+  piece = newPiece(nextType); nextType = randType(); drawNext();
+  if (collide(piece.m, piece.x, piece.y)) gameOver();
+}
+function drop() {
+  if (!collide(piece.m, piece.x, piece.y + 1)) { piece.y++; return true; }
+  merge(); clearLines(); spawn(); return false;
+}
+
+function cell(ctx, x, y, color, s = SIZE) {
+  ctx.fillStyle = color; ctx.fillRect(x * s + 1, y * s + 1, s - 2, s - 2);
+  ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.fillRect(x * s + 1, y * s + 1, s - 2, 5);
+}
+function draw() {
+  board.fillStyle = '#111827'; board.fillRect(0, 0, COLS * SIZE, ROWS * SIZE);
+  board.strokeStyle = '#1f2937';
+  for (let c = 1; c < COLS; c++) { board.beginPath(); board.moveTo(c * SIZE, 0); board.lineTo(c * SIZE, ROWS * SIZE); board.stroke(); }
+  grid.forEach((row, r) => row.forEach((t, c) => t && cell(board, c, r, COLORS[t])));
+  // 고스트(떨어질 위치 미리보기)
+  let gy = piece.y; while (!collide(piece.m, piece.x, gy + 1)) gy++;
+  board.globalAlpha = .25; piece.m.forEach((row, r) => row.forEach((v, c) => v && cell(board, piece.x + c, gy + r, COLORS[piece.type]))); board.globalAlpha = 1;
+  piece.m.forEach((row, r) => row.forEach((v, c) => v && cell(board, piece.x + c, piece.y + r, COLORS[piece.type])));
+}
+function drawNext() {
+  next.clearRect(0, 0, 100, 100);
+  const m = SHAPES[nextType], s = 22, off = (100 - m.length * s) / 2;
+  m.forEach((row, r) => row.forEach((v, c) => { if (v) { next.save(); next.translate(off, off); cell(next, c, r, COLORS[nextType], s); next.restore(); } }));
+}
+function updateHud() {
+  document.getElementById('score').textContent = score;
+  document.getElementById('lines').textContent = lines;
+  document.getElementById('level').textContent = level;
+}
+
+function loop(t) {
+  if (!running) return;
+  if (!paused) {
+    dropTimer += t - last;
+    if (dropTimer > dropInterval) { drop(); dropTimer = 0; }
+    if (running) draw();
+  }
+  last = t;
+  requestAnimationFrame(loop);
+}
+
+function start() {
+  grid = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+  score = 0; lines = 0; level = 1; dropInterval = 800; dropTimer = 0;
+  nextType = randType(); spawn(); updateHud();
+  running = true; paused = false; showOverlay(false);
+  last = performance.now(); requestAnimationFrame(loop);
+  document.getElementById('startBtn').blur();
+}
+function gameOver() {
+  running = false;
+  showOverlay(true, '게임 오버', '최종 점수: ' + score + '점 · ' + lines + '줄', true);
+}
+function showOverlay(show, title, text, withBtn) {
+  const ov = document.getElementById('overlay');
+  ov.classList.toggle('hidden', !show);
+  if (show) {
+    document.getElementById('ovTitle').textContent = title;
+    document.getElementById('ovText').textContent = text;
+    document.getElementById('ovBtn').classList.toggle('hidden', !withBtn);
+  }
+}
+
+// 재요청으로 추가한 기능: P 키 일시정지
+document.addEventListener('keydown', e => {
+  if (!running) { if (e.key === 'Enter') start(); return; }
+  if (e.key === 'p' || e.key === 'P') {
+    paused = !paused;
+    showOverlay(paused, '일시정지', 'P 키를 누르면 계속합니다', false);
+    return;
+  }
+  if (paused) return;
+  if (e.key === 'ArrowLeft' && !collide(piece.m, piece.x - 1, piece.y)) piece.x--;
+  else if (e.key === 'ArrowRight' && !collide(piece.m, piece.x + 1, piece.y)) piece.x++;
+  else if (e.key === 'ArrowDown') { if (drop()) score += 1; updateHud(); }
+  else if (e.key === 'ArrowUp') {
+    const r = rotate(piece.m);
+    for (const k of [0, -1, 1, -2, 2]) if (!collide(r, piece.x + k, piece.y)) { piece.m = r; piece.x += k; break; }
+  }
+  else if (e.key === ' ') { while (drop()) score += 2; updateHud(); }
+  else return;
+  e.preventDefault();
+  if (running) draw();
+});
+
+document.getElementById('startBtn').addEventListener('click', start);
+document.getElementById('ovBtn').addEventListener('click', start);
+// 처음 화면
+grid = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+board.fillStyle = '#111827'; board.fillRect(0, 0, COLS * SIZE, ROWS * SIZE);
+</script>
+</body>
+</html>
